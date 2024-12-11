@@ -1,25 +1,18 @@
 #!/bin/bash
 
-# Set LOGDIR (where log files and pid files are stored.)
-LOGDIR="/var/log/cpu_temp_alarm"
-
-# Set log file path
-log_file="$LOGDIR/cpu_temp_alarm.log"
-
-# Set PID file path
-pid_file="$LOGDIR/cpu_temp_alarm.pid"
+# Set pid file
+pid_file="/tmp/cpu_temp_alarm.pid"
 
 # Check if the PID file exists
 if [ -f "$pid_file" ]; then
-	# Read the PID from the file
-	pid=$(cat "$pid_file")
-	
-	# Kill the process
-	kill $pid
-
-	# Remove the pid file
-	rm "$pid_file"
-	echo $(date) "CPU temprature alarm process killed!" >> "$log_file"
+    pid=$(cat "$pid_file")
+    if kill "$pid" &>/dev/null; then
+        echo "$(date) CPU temperature alarm process killed!" | logger -t cpu_temp_alarm
+        rm "$pid_file"
+    else
+        echo "$(date) Failed to kill process with PID $pid." | logger -t cpu_temp_alarm
+    fi
 else
-	echo $(date) "CPU temprature alarm process is not running." >> "$log_file"
+    echo "$(date) No CPU temperature alarm process running." | logger -t cpu_temp_alarm
 fi
+

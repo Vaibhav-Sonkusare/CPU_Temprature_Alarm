@@ -2,82 +2,72 @@
 
 # Setting respective file locations
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
-SOUNDDIR="/home/vaibhav/.cpu_temp_alarm/sounds"
-LOGDIR="/var/log/cpu_temp_alarm"
+SOUNDDIR="$SCRIPTDIR/sounds"
+PIDDIR="/tmp"
 
-mkdir -p "$LOGDIR"
-
-# Check if cpu_temp_alarm.pid file exists
-# If it exists then this file is already running.
-if [ -f "$LOGDIR/cpu_temp_alarm.pid" ]; then
-	echo $(date) "CPU temprature alarm script is already running!" >> "$log_file"
-	echo "CPU temprature alarm script is already running!"
-	echo "Please run the kill_cpu_temp_alarm.sh file with the following command to kill that process."
-	echo -e "\t$ \"$SCRIPTDIR/kill_cpu_temp_alarm.sh\""
-	# or you can also delete the cpu_temp_alarm.pid file located at $LOGDIR
-	exit 1
+# Ensure `sensors` command is available
+if ! command -v sensors &>/dev/null; then
+    echo "Error: 'sensors' command not found. Please install 'lm-sensors' package." >&2
+    exit 1
 fi
 
-# Set the threshold temperature
-threshold_0=75
-threshold_1=80
-threshold_2=85
-threshold_3=90
-threshold_4=95
+# Check if script is already running
+pid_file="$PIDDIR/cpu_temp_alarm.pid"
+if [ -f "$pid_file" ]; then
+    echo "CPU temperature alarm script is already running!"
+    echo "To stop it, use: $SCRIPTDIR/kill_cpu_temp_alarm.sh"
+    exit 1
+fi
 
-# Set initial wait time to check again
-wait_time=300
+# Set thresholds and initial wait time
+declare -A thresholds=(
+    ["low"]=75
+    ["medium"]=85
+    ["high"]=95
+)
+declare -A wait_times=(
+    ["low"]=300
+    ["medium"]=60
+    ["high"]=10
+)
+alert_sounds=(
+    ["low"]="$SOUNDDIR/low-alert.wav"
+    ["medium"]="$SOUNDDIR/medium-alert.wav"
+    ["high"]="$SOUNDDIR/high-alert.wav"
+)
+wait_time=${wait_times["low"]}
 
-# Alert Sound files
-low_alert="$SOUNDDIR/low-alert.wav"
-medium_alert="$SOUNDDIR/medium-alert.wav"
-high_alert="$SOUNDDIR/high-alert.wav"
+echo "$(date) CPU temperature monitor started!" | logger -t cpu_temp_alarm
+echo $$ > "$pid_file"
 
-# Set log file path and clear it
-log_file="$LOGDIR/cpu_temp_alarm.log"
-echo $(date) "CPU temprature moniter started!" > "$log_file"
-
-# Set pid file path
-pid_file="$LOGDIR/cpu_temp_alarm.pid"
-
-# Function to print temprature, play alert sound, and change $wait_time
-function func1() { 
-	echo $(date) "CPU temperature is $1 $2°C! Current temperature: $3°C" >> "$log_file"
-	if [ $# -eq "4" ]; then
-		wait_time=$4
-	elif [ $# -eq "5" ]; then
-		apaly $4
-		wait_time $5
-	fi
-}
-
+# Main loop
 while true; do
-	# Get the CPU temperature using sensors
-	cpu_temp=$(sensors | awk '/Tctl/ {gsub(/[+°C]/,"",$2); printf "%.0f", $2}')
+    cpu_temp=$(sensors | awk '/Tctl/ {gsub(/[+°C]/,"",$2); printf "%.0f", $2}')
+    if [ -z "$cpu_temp" ]; then
+        echo "Error: CPU temperature not available!" | logger -t cpu_temp_alarm
+        wait_time=600
+    else
+        if [ "$cpu_temp" -ge "${thresholds["high"]}" ]; then
+            alert_level="high"
+            wait_time=${wait_times["high"]}
+        elif [ "$cpu_temp" -ge "${thresholds["medium"]}" ]; then
+            alert_level="medium"
+            wait_time=${wait_times["medium"]}
+        elif [ "$cpu_temp" -ge "${thresholds["low"]}" ]; then
+            alert_level="low"
+            wait_time=${wait_times["low"]}
+        else
+            alert_level=""
+            wait_time=300
+        fi
 
-	# Check if the temperature exceeds the threshold
-	if [ ! -z "$cpu_temp" ]; then
-		if [ "$cpu_temp" -gt "$threshold_4" ]; then
-			func1 "above" $threshold_4 $cpu_temp $high_alert "600"
-			exit 0
-		elif [ "$cpu_temp" -gt "$threshold_3" ]; then
-			func1 "above" $threshold_3 $cpu_temp $medium_alert "10"
-		elif [ "$cpu_temp" -gt "$threshold_2" ]; then
-			func1 "above" $threshold_2 $cpu_temp $medium_alert "30"
-		elif [ "$cpu_temp" -gt "$threshold_1" ]; then
-			func1 "above" $threshold_1 $cpu_temp $low_alert "60"
-		elif [ "$cpu_temp" -gt "$threshold_0" ]; then
-			func1 "above" $threshold_0 $cpu_temp $low_alert "150"
-		else
-			func1 "below" $threshold_0 $cpu_temp "300"
-		fi
-	else
-		echo $(date) "Error: CPU temprature not available!" >> "$log_file"
-		wait_time=600
-	fi
-
-	# Sleep for $wait_time seconds and then check temp again.
-	sleep $wait_time
-done &
-echo $! > "$pid_file"
+        if [ -n "$alert_level" ]; then
+            echo "CPU temperature ${cpu_temp}°C exceeds ${thresholds[$alert_level]}°C (level: $alert_level)." | logger -t cpu_temp_alarm
+            if [ -f "${alert_sounds[$alert_level]}" ]; then
+                aplay "${alert_sounds[$alert_level]}" &
+            fi
+        fi
+    fi
+    sleep "$wait_time"
+done
 
